@@ -5,6 +5,9 @@ import argparse
 import numpy as np
 import ccdproc as cdp
 from astropy.stats import mad_std
+from astropy import units as u
+from astropy.nddata import CCDData
+from astropy.io import fits
 
 class Pipeline:
     def __init__(self, path):
