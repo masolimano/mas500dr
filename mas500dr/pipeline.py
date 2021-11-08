@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import warnings
 from pathlib import Path
 import argparse
 import numpy as np
@@ -8,6 +9,9 @@ from astropy.stats import mad_std
 from astropy import units as u
 from astropy.nddata import CCDData
 from astropy.io import fits
+from astropy.wcs import FITSFixedWarning
+
+warnings.simplefilter('ignore', FITSFixedWarning)
 
 class Pipeline:
     def __init__(self, path):
