@@ -84,7 +84,32 @@ class Pipeline:
         self.master_dark.write(self.master_products_path / 'master_dark.fits', overwrite=True)
 
 
-
+        """
+        Flat correction: bias substracion, assuming dark current = 0
+        """
+    
+    
+        def create_master_flat(self):
+            flat_ccds = self.flats_ifc.ccds(ccd_kwargs=dict(unit='adu'))
+            print('Creating master flat...')
+            bias_subtracted_flats = list()   
+            for flat in flat_ccds:
+                bias_subtracted_flat = cdp.subtract_bias(flat, self.master_bias)
+                bias_subtracted_flats.append(bias_subtracted_flat)
+                
+            self.master_flat = cdp.combine(
+             bias_subtracted_flats,
+             method='average',
+             sigma_clip=True,
+             sigma_clip_low_thresh=5,
+             sigma_clip_high_thresh=5,
+             sigma_clip_func=np.ma.median,
+             sigma_clip_dev_func=mad_std,
+             mem_limit=350e6
+            )
+            self.master_flat.meta['combined'] = True
+            self.master_flat.write(self.master_products_path / 'master_flat.fits', overwrite=True)
+    
 
 def main():
     pwd = os.getcwd()
@@ -92,5 +117,6 @@ def main():
     pipe = Pipeline(Path(pwd))
     pipe.create_master_bias()
     pipe.create_master_dark()
+    pipe.create_master_flat()
     #print('This is script is under development.') #print('Right now it only prints this message.')
     #print('Soon it will serve to automatically reduce data from the MAS500 telescope.')
