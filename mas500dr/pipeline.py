@@ -14,7 +14,7 @@ from astropy.wcs import FITSFixedWarning
 warnings.simplefilter('ignore', FITSFixedWarning)
 
 class Pipeline:
-    def __init__(self, path):
+    def __init__(self, path, mem_limit=350e6):
         """
         Class constructor, it creates
         the parent ImageFileCollection object and
@@ -23,8 +23,12 @@ class Pipeline:
         Parameters
         ----------
         path: pathlib.Path object
+
+        mem_limit: float
+            Memory limit for image combination
         """
         self.path = path
+        self.mem_limit = 350e6
         self.master_products_path = self.path / 'master_calibrations'
 
         if not os.path.exists(self.master_products_path):
@@ -37,20 +41,22 @@ class Pipeline:
         self.light_ifc = self.parent_ifc.filter(imagetyp='Light Frame')
 
     @staticmethod
-    def _avg_combine(frame_list):
+    def _avg_combine(frame_list, mem_limit=350e6):
         """
         Wrapper of ccdproc.combine with the keyword values recommended
         in the ccdproc book for use with averaging.
 
         Parameters
         ----------
-        frame_list: list of CCDData
-            List of frames to combine
+        frame_list: generator of CCDData
+            Generator that yields the frames to combine
+
+        mem_limit: float
+            Memory limit for image combination
 
         Returns
         ----------
         combined_ccd: CCDData object
-
         """
         combined_ccd = cdp.combine(
             frame_list,
@@ -60,26 +66,37 @@ class Pipeline:
             sigma_clip_high_thresh=5,
             sigma_clip_func=np.ma.median,
             sigma_clip_dev_func=mad_std,
-            mem_limit=350e6
+            mem_limit=mem_limit
         )
         combined_ccd.meta['combined'] = True
         return combined_ccd
 
-    def create_master_dark(self):
+    @staticmethod
+    def _median_combine(frame_list, mem_limit=350e6):
         """
-        Combines all available dark frames after master bias subtraction.
-        TODO: - combine only darks with equal exposure length
-              - identify hot pixels
-        """
-        dark_ccds = self.darks_ifc.ccds(ccd_kwargs=dict(unit='adu'))
-        print('Creating master dark...')
-        bias_subtracted_darks = list()
-        for dark in dark_ccds:
-            bias_subtracted_dark = cdp.subtract_bias(dark, self.master_bias)
-            bias_subtracted_darks.append(bias_subtracted_dark)
+        Wrapper of ccdproc.combine set to median stacking
+        Use this when the length of frame_list is not too large.
 
-        self.master_dark = self._avg_combine(bias_subtracted_darks)
-        self.master_dark.write(self.master_products_path / 'master_dark.fits', overwrite=True)
+        Parameters
+        ----------
+        frame_list: generator of CCDData
+            Generator that yields the frames to combine
+
+        mem_limit: float
+            Memory limit for image combination
+
+        Returns
+        ----------
+        combined_ccd: CCDData object
+        """
+        combined_ccd = cdp.combine(
+            frame_list,
+            method='median',
+            mem_limit=mem_limit
+        )
+        combined_ccd.meta['combined'] = True
+        return combined_ccd
+
 
 
     def create_master_bias(self):
@@ -89,34 +106,61 @@ class Pipeline:
         """
         bias_ccds = self.bias_ifc.ccds(ccd_kwargs=dict(unit='adu'))
         print('Creating master bias...')
-        self.master_bias = self._avg_combine(bias_ccds)
-        self.master_bias.write(self.master_products_path / 'master_bias.fits', overwrite=True)
+        if len(self.bias_ifc.files) < 3:
+            print('Not enough bias frames to combine')
+        elif 3 <= len(self.bias_ifc.files) < 6:
+            self.master_bias = self._median_combine(bias_ccds, self.mem_limit)
+        else:
+            self.master_bias = self._avg_combine(bias_ccds, self.mem_limit)
+
+        binning = self.master_bias.header['XBINNING']
+        self.master_bias.write(self.master_products_path / f'master_bias_bin{binning}_1MHz.fits', overwrite=True)
 
     def create_master_dark(self):
         """
         Combines all available dark frames after master bias subtraction.
-        TODO: - combine only darks with equal exposure length
+        TODO: - combine only darks with equal:
+                - exposure length
+                - binning
+                - readout mode
               - identify hot pixels
         """
-        dark_ccds = self.darks_ifc.ccds(ccd_kwargs=dict(unit='adu'))
-        print('Creating master dark...')
-        bias_subtracted_darks = list()
-        for dark in dark_ccds:
-            bias_subtracted_dark = cdp.subtract_bias(dark, self.master_bias)
-            bias_subtracted_darks.append(bias_subtracted_dark)
+        available_exptimes = np.unique(self.darks_ifc.summary['exptime'].data)
+        self.master_dark = dict()
+        for exptime in available_exptimes:
+            dark_collection = self.darks_ifc.filter(exptime=exptime, readoutm='1 MHz')
+            dark_ccds = dark_collection.ccds(ccd_kwargs=dict(unit='adu'))
+            print(f'Creating master dark of t_exp = {exptime:.1f} seconds')
 
-        self.master_dark = cdp.combine(
-            bias_subtracted_darks,
-            method='average',
-            sigma_clip=True,
-            sigma_clip_low_thresh=5,
-            sigma_clip_high_thresh=5,
-            sigma_clip_func=np.ma.median,
-            sigma_clip_dev_func=mad_std,
-            mem_limit=350e6
-        )
-        self.master_dark.meta['combined'] = True
-        self.master_dark.write(self.master_products_path / 'master_dark.fits', overwrite=True)
+            if len(dark_collection.files) < 3:
+                print('Not enough dark frames to combine')
+                continue
+            elif 3 <= len(dark_collection.files) < 6:
+                self.master_dark[exptime] = self._median_combine(dark_ccds)
+            else:
+                self.master_dark[exptime] = self._avg_combine(dark_ccds)
+
+
+            binning = self.master_dark[exptime].header['XBINNING']
+            self.master_dark[exptime].write(self.master_products_path / f'master_dark_{exptime:.0f}s_bin{binning:d}_1MHz.fits',
+                                            overwrite=True)
+
+#        bias_subtracted_darks = list()
+#        for dark in dark_ccds:
+#            bias_subtracted_dark = cdp.subtract_bias(dark, self.master_bias)
+#            bias_subtracted_darks.append(bias_subtracted_dark)
+
+#        self.master_dark = cdp.combine(
+#            bias_subtracted_darks,
+#            method='average',
+#            sigma_clip=True,
+#            sigma_clip_low_thresh=5,
+#            sigma_clip_high_thresh=5,
+#            sigma_clip_func=np.ma.median,
+#            sigma_clip_dev_func=mad_std,
+#            mem_limit=350e6
+#        )
+#        self.master_dark.meta['combined'] = True
 
 
 
@@ -131,7 +175,7 @@ class Pipeline:
         for flat in flat_ccds:
             bias_subtracted_flat = cdp.subtract_bias(flat, self.master_bias)
             bias_subtracted_flats.append(bias_subtracted_flat)
-        self.master_flat = self._avg_combine(bias_subtracted_flats)
+        self.master_flat = self._avg_combine(bias_subtracted_flats, self.mem_limit)
         self.master_flat.write(self.master_products_path / 'master_flat.fits', overwrite=True)
 
 def main():
@@ -140,6 +184,6 @@ def main():
     pipe = Pipeline(Path(pwd))
     pipe.create_master_bias()
     pipe.create_master_dark()
-    pipe.create_master_flat()
+    #pipe.create_master_flat()
     #print('This is script is under development.') #print('Right now it only prints this message.')
     #print('Soon it will serve to automatically reduce data from the MAS500 telescope.')
