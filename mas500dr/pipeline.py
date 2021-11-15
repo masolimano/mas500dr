@@ -31,7 +31,7 @@ class Pipeline:
             Memory limit for image combination
         """
         self.path = path
-        self.mem_limit = 350e6
+        self.mem_limit = mem_limit
         self.master_products_path = self.path / 'master_calibrations'
         self.calibrated_path = self.path / 'calibrated'
 
@@ -169,8 +169,6 @@ class Pipeline:
             bias_subtracted_flats.append(bias_subtracted_flat)
         self.master_flat = self._avg_combine(bias_subtracted_flats, self.mem_limit, scale=inv_median)
 
-#        # Normalize flat
-#        self.master_flat.multiply(inv_median(self.master_flat.data))
 
         # Saving
         filter_ = self.master_flat.header['FILTER']
@@ -178,6 +176,7 @@ class Pipeline:
 
     def calibrate_science(self):
         """
+        Calibrate science exposures. Output is in units of electron
         """
 
         for raw_science, fname in self.light_ifc.ccds(return_fname=True, ccd_kwargs=dict(unit='adu')):
@@ -192,13 +191,19 @@ class Pipeline:
                 gain_corrected=False
             )
             calib_science.write(self.calibrated_path / f'{fname[:-4]}_calibrated.fits', overwrite=True)
+
 def main():
+    """
+    User-facing script to automatically reduce all science
+    data in the current directory
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mem_limit", help="Maximum memory (bytes) to use in image combination", type=float, default=350e6)
+    args = parser.parse_args()
     pwd = os.getcwd()
     print(f'Current directory: {pwd}')
-    pipe = Pipeline(Path(pwd))
+    pipe = Pipeline(Path(pwd), mem_limit=args.mem_limit)
     pipe.create_master_bias()
     pipe.create_master_dark()
     pipe.create_master_flat()
     pipe.calibrate_science()
-    #print('This is script is under development.') #print('Right now it only prints this message.')
-    #print('Soon it will serve to automatically reduce data from the MAS500 telescope.')
