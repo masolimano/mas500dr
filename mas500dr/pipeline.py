@@ -11,7 +11,10 @@ from astropy.nddata import CCDData
 from astropy.io import fits
 from astropy.wcs import FITSFixedWarning
 
+from .utils import inv_median
+
 warnings.simplefilter('ignore', FITSFixedWarning)
+
 
 class Pipeline:
     def __init__(self, path, mem_limit=350e6):
@@ -30,9 +33,13 @@ class Pipeline:
         self.path = path
         self.mem_limit = 350e6
         self.master_products_path = self.path / 'master_calibrations'
+        self.calibrated_path = self.path / 'calibrated'
 
         if not os.path.exists(self.master_products_path):
             os.mkdir(self.master_products_path)
+
+        if not os.path.exists(self.calibrated_path):
+            os.mkdir(self.calibrated_path)
 
         self.parent_ifc = cdp.ImageFileCollection(path)
         self.darks_ifc = self.parent_ifc.filter(imagetyp='Dark Frame')
@@ -41,7 +48,7 @@ class Pipeline:
         self.light_ifc = self.parent_ifc.filter(imagetyp='Light Frame')
 
     @staticmethod
-    def _avg_combine(frame_list, mem_limit=350e6):
+    def _avg_combine(frame_list, mem_limit=350e6, **kwargs):
         """
         Wrapper of ccdproc.combine with the keyword values recommended
         in the ccdproc book for use with averaging.
@@ -66,13 +73,14 @@ class Pipeline:
             sigma_clip_high_thresh=5,
             sigma_clip_func=np.ma.median,
             sigma_clip_dev_func=mad_std,
-            mem_limit=mem_limit
+            mem_limit=mem_limit,
+            **kwargs
         )
         combined_ccd.meta['combined'] = True
         return combined_ccd
 
     @staticmethod
-    def _median_combine(frame_list, mem_limit=350e6):
+    def _median_combine(frame_list, mem_limit=350e6, **kwargs):
         """
         Wrapper of ccdproc.combine set to median stacking
         Use this when the length of frame_list is not too large.
@@ -92,7 +100,8 @@ class Pipeline:
         combined_ccd = cdp.combine(
             frame_list,
             method='median',
-            mem_limit=mem_limit
+            mem_limit=mem_limit,
+            **kwargs
         )
         combined_ccd.meta['combined'] = True
         return combined_ccd
@@ -107,7 +116,7 @@ class Pipeline:
         bias_ccds = self.bias_ifc.ccds(ccd_kwargs=dict(unit='adu'))
         print('Creating master bias...')
         if len(self.bias_ifc.files) < 3:
-            print('Not enough bias frames to combine')
+            raise RuntimeError('Not enough bias frames to combine')
         elif 3 <= len(self.bias_ifc.files) < 6:
             self.master_bias = self._median_combine(bias_ccds, self.mem_limit)
         else:
@@ -133,7 +142,7 @@ class Pipeline:
             print(f'Creating master dark of t_exp = {exptime:.1f} seconds')
 
             if len(dark_collection.files) < 3:
-                print('Not enough dark frames to combine')
+                raise RuntimeError('Not enough dark frames to combine')
                 continue
             elif 3 <= len(dark_collection.files) < 6:
                 self.master_dark[exptime] = self._median_combine(dark_ccds)
@@ -144,23 +153,6 @@ class Pipeline:
             binning = self.master_dark[exptime].header['XBINNING']
             self.master_dark[exptime].write(self.master_products_path / f'master_dark_{exptime:.0f}s_bin{binning:d}_1MHz.fits',
                                             overwrite=True)
-
-#        bias_subtracted_darks = list()
-#        for dark in dark_ccds:
-#            bias_subtracted_dark = cdp.subtract_bias(dark, self.master_bias)
-#            bias_subtracted_darks.append(bias_subtracted_dark)
-
-#        self.master_dark = cdp.combine(
-#            bias_subtracted_darks,
-#            method='average',
-#            sigma_clip=True,
-#            sigma_clip_low_thresh=5,
-#            sigma_clip_high_thresh=5,
-#            sigma_clip_func=np.ma.median,
-#            sigma_clip_dev_func=mad_std,
-#            mem_limit=350e6
-#        )
-#        self.master_dark.meta['combined'] = True
 
 
 
@@ -175,15 +167,38 @@ class Pipeline:
         for flat in flat_ccds:
             bias_subtracted_flat = cdp.subtract_bias(flat, self.master_bias)
             bias_subtracted_flats.append(bias_subtracted_flat)
-        self.master_flat = self._avg_combine(bias_subtracted_flats, self.mem_limit)
-        self.master_flat.write(self.master_products_path / 'master_flat.fits', overwrite=True)
+        self.master_flat = self._avg_combine(bias_subtracted_flats, self.mem_limit, scale=inv_median)
 
+#        # Normalize flat
+#        self.master_flat.multiply(inv_median(self.master_flat.data))
+
+        # Saving
+        filter_ = self.master_flat.header['FILTER']
+        self.master_flat.write(self.master_products_path / f'master_flat_{filter_}.fits', overwrite=True)
+
+    def calibrate_science(self):
+        """
+        """
+
+        for raw_science, fname in self.light_ifc.ccds(return_fname=True, ccd_kwargs=dict(unit='adu')):
+            calib_science = cdp.ccd_process(
+                raw_science,
+                dark_frame=self.master_dark[50.0],
+                master_flat=self.master_flat,
+                gain=1.5*u.electron/u.adu,
+                readnoise=10*u.electron,
+                exposure_key='exptime',
+                exposure_unit=u.second,
+                gain_corrected=False
+            )
+            calib_science.write(self.calibrated_path / f'{fname[:-4]}_calibrated.fits', overwrite=True)
 def main():
     pwd = os.getcwd()
     print(f'Current directory: {pwd}')
     pipe = Pipeline(Path(pwd))
     pipe.create_master_bias()
     pipe.create_master_dark()
-    #pipe.create_master_flat()
+    pipe.create_master_flat()
+    pipe.calibrate_science()
     #print('This is script is under development.') #print('Right now it only prints this message.')
     #print('Soon it will serve to automatically reduce data from the MAS500 telescope.')
