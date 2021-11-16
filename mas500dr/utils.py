@@ -10,6 +10,7 @@ from ccdproc.utils.sample_directory import sample_directory_with_files
 from photutils import detect_sources
 from astrowidgets import ImageWidget
 import matplotlib.pyplot as plt
+from  astroscrappy  import  detect_cosmics
 
 def inv_median(a):
     """
@@ -21,8 +22,10 @@ def inv_median(a):
     return 1 / np.median(a)
 
 def create_ccd_mask(flat1, flat2):
-    ## From chapter 6.2.1. Detecting bad pixels with ccdmask
-    ## It is required to have 2 flat frames with different count
+    """
+    From chapter 6.2.1. Detecting bad pixels with ccdmask
+    It is required to have 2 flat frames with different count
+    """
     print('Creating ccd mask...')
     ratio = flat1.divide(flat2)
     maskr = cdp.ccdmask(ratio)
@@ -31,3 +34,21 @@ def create_ccd_mask(flat1, flat2):
     mask_as_ccd.header['imagetyp'] = 'flat mask'
     mask_as_ccd.write('mask_from_ccdmask.fits')
     return maskr
+
+def cosmic_ray_correction(clean_image):
+    """
+    This function corrects the science calibrated image from cosmic ray,
+    it is a function from astroscrappy, available at https://github.com/astropy/astroscrappy
+    the explanation from all the arguments can be found at: 
+    https://astroscrappy.readthedocs.io/en/latest/api/astroscrappy.detect_cosmics.html
+ 
+    """
+    print('Cleaning from cosmic ray...')
+    detect_cosmics(clean_image,inmask=None, sigclip=4.0, sigfrac=0.3, objlim =5.0, 
+                   gain =1.15,readnoise =6.5 ,  satlevel=65536, 
+                   pssl =0.0,niter=4, sepmed=True ,cleantype ='meanmask' , fsmode='median',
+                   psfmodel='gauss' ,  psffwhm =2.5, psfsize=7,
+                   psfk=None ,  psfbeta =4.765 ,  verbose=False)
+    return mask, _clean
+
+

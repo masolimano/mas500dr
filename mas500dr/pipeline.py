@@ -11,7 +11,7 @@ from astropy.nddata import CCDData
 from astropy.io import fits
 from astropy.wcs import FITSFixedWarning
 
-from .utils import inv_median
+from .utils import inv_median, create_ccd_mask,cosmic_ray_correction
 
 warnings.simplefilter('ignore', FITSFixedWarning)
 
