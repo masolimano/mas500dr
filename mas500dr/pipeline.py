@@ -10,6 +10,7 @@ from astropy import units as u
 from astropy.nddata import CCDData
 from astropy.io import fits
 from astropy.wcs import FITSFixedWarning
+from astropy.utils.exceptions import AstropyUserWarning
 
 from .utils import inv_median, create_ccd_mask,cosmic_ray_correction
 
@@ -30,22 +31,38 @@ class Pipeline:
         mem_limit: float
             Memory limit for image combination
         """
-        self.path = path
+        self.root = path
         self.mem_limit = mem_limit
-        self.master_products_path = self.path / 'master_calibrations'
-        self.calibrated_path = self.path / 'calibrated'
 
-        if not os.path.exists(self.master_products_path):
-            os.mkdir(self.master_products_path)
+        self.raw_path = self.root / 'raw'
 
-        if not os.path.exists(self.calibrated_path):
-            os.mkdir(self.calibrated_path)
+        if not self.raw_path.exists():
+            self.raw_path.mkdir()
 
-        self.parent_ifc = cdp.ImageFileCollection(path)
+        fits_files_in_root = self.root.glob('*.fit*')
+        if len(list(fits_files_in_root)) > 0:
+            for filename in fits_files_in_root:
+                filename.rename(self.raw_path / filename.name)
+
+        self.master_products_path = self.root / 'master_calibrations'
+        self.calibrated_path = self.root / 'calibrated'
+
+        if not self.master_products_path.exists():
+            self.master_products_path.mkdir()
+
+        if not self.calibrated_path.exists():
+            self.calibrated_path.mkdir()
+
+        self.parent_ifc = cdp.ImageFileCollection(self.raw_path)
+        assert len(self.parent_ifc.files) > 0
         self.darks_ifc = self.parent_ifc.filter(imagetyp='Dark Frame')
         self.bias_ifc = self.parent_ifc.filter(imagetyp='Bias Frame')
         self.flats_ifc = self.parent_ifc.filter(imagetyp='Flat Frame')
         self.light_ifc = self.parent_ifc.filter(imagetyp='Light Frame')
+
+        light_pd = self.light_ifc.summary.to_pandas()
+        self.grouped_light = light_pd.groupby(by=['filter', 'xbinning', 'readoutm'])
+
 
     @staticmethod
     def _avg_combine(frame_list, mem_limit=350e6, **kwargs):
@@ -123,7 +140,8 @@ class Pipeline:
             self.master_bias = self._avg_combine(bias_ccds, self.mem_limit)
 
         binning = self.master_bias.header['XBINNING']
-        self.master_bias.write(self.master_products_path / f'master_bias_bin{binning}_1MHz.fits', overwrite=True)
+        readout = self.master_bias.header['READOUTM'].replace(' ', '')
+        self.master_bias.write(self.master_products_path / f'master_bias_bin{binning}_{readout}.fits', overwrite=True)
 
     def create_master_dark(self):
         """
@@ -145,9 +163,9 @@ class Pipeline:
                 raise RuntimeError('Not enough dark frames to combine')
                 continue
             elif 3 <= len(dark_collection.files) < 6:
-                self.master_dark[exptime] = self._median_combine(dark_ccds)
+                self.master_dark[exptime] = self._median_combine(dark_ccds, self.mem_limit)
             else:
-                self.master_dark[exptime] = self._avg_combine(dark_ccds)
+                self.master_dark[exptime] = self._avg_combine(dark_ccds, self.mem_limit)
 
 
             binning = self.master_dark[exptime].header['XBINNING']
@@ -180,9 +198,10 @@ class Pipeline:
         """
 
         for raw_science, fname in self.light_ifc.ccds(return_fname=True, ccd_kwargs=dict(unit='adu')):
+            exptime = raw_science.header['EXPTIME']
             calib_science = cdp.ccd_process(
                 raw_science,
-                dark_frame=self.master_dark[50.0],
+                dark_frame=self.master_dark[exptime],
                 master_flat=self.master_flat,
                 gain=1.5*u.electron/u.adu,
                 readnoise=10*u.electron,
@@ -191,6 +210,45 @@ class Pipeline:
                 gain_corrected=False
             )
             calib_science.write(self.calibrated_path / f'{fname[:-4]}_calibrated.fits', overwrite=True)
+
+    def run(self):
+        """
+        Work in progress: This function will iterate over all the dataset finding and applying the corresponding
+        calibrations
+        """
+        self.group_iterator = self.grouped_light.__iter__()
+        self.calib_ifc  = cdp.ImageFileCollection(self.master_products_path)
+        for (flt, binn, rdm), group in self.group_iterator:
+            print(flt, binn, rdm)
+            if len(self.calib_ifc.files) > 0:
+                pre_calibrated_bias = self.calib_ifc.filter(imagetyp='Bias Frame',  xbinning=binn, readoutm=rdm)
+                if len(pre_calibrated_bias.files) == 0:
+                    print('No processed bias for the current group. Selecting and ')
+                    self.bias_ifc = self.parent_ifc.filter(imagetyp='Bias Frame', xbinning=binn, readoutm=rdm)
+                    self.create_master_bias()
+                    pre_calibrated_bias.refresh()
+                elif len(pre_calibrated_bias.files) == 1:
+                    print(f'Processed  bias found for the current group. Loading {pre_calibrated_bias.files[0]}')
+                    self.master_bias = CCDData.read(pre_calibrated_bias.files[0])
+                else:
+                    raise RuntimeError("More than one master bias, can't decide")
+            else:
+                print(f'Empty {self.master_products_path.name} folder')
+                self.bias_ifc = self.parent_ifc.filter(imagetyp='Bias Frame', xbinning=binn, readoutm=rdm)
+                self.create_master_bias()
+
+            self.calib_ifc.refresh()
+            self.darks_ifc = self.parent_ifc.filter(imagetyp='Dark Frame', xbinning=binn, readoutm=rdm)
+            pre_calibrated_darks = self.calib_ifc.filter(imagetyp='Dark Frame', combined=True, xbinning=binn)
+            if len(pre_calibrated_darks.files) > 0:
+                pass
+
+
+            self.flats_ifc = self.parent_ifc.filter(imagetyp='Flat Frame', xbinning=binn, filter=flt)
+            pre_calibrated_flats = self.calib_ifc.filter(imagetyp='Flat frame', filter=flt, xbinning=binn)
+            if len(pre_calibrated_flats.files) == 0:
+                pass
+
 
 def main():
     """

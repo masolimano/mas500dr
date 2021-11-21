@@ -8,7 +8,6 @@ from pathlib import Path
 from ccdproc import ImageFileCollection
 from ccdproc.utils.sample_directory import sample_directory_with_files
 from photutils import detect_sources
-from astrowidgets import ImageWidget
 import matplotlib.pyplot as plt
 from  astroscrappy  import  detect_cosmics
 
