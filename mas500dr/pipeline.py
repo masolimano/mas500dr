@@ -43,9 +43,8 @@ class Pipeline:
             self.raw_path.mkdir()
 
         fits_files_in_root = self.root.glob('*.fit*')
-        if len(list(fits_files_in_root)) > 0:
-            for filename in fits_files_in_root:
-                filename.rename(self.raw_path / filename.name)
+        for filename in fits_files_in_root:
+            filename.rename(self.raw_path / filename.name)
 
         self.master_products_path = self.root / 'master_calibrations'
         self.calibrated_path = self.root / 'calibrated'
