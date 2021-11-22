@@ -16,7 +16,10 @@ from .utils import inv_median, create_ccd_mask,cosmic_ray_correction
 
 warnings.simplefilter('ignore', FITSFixedWarning)
 
-
+READNOISE = {
+    '1 MHz': 10,
+    '8 MHz': 14
+}
 class Pipeline:
     def __init__(self, path, mem_limit=350e6):
         """
@@ -155,7 +158,7 @@ class Pipeline:
         available_exptimes = np.unique(self.darks_ifc.summary['exptime'].data)
         self.master_dark = dict()
         for exptime in available_exptimes:
-            dark_collection = self.darks_ifc.filter(exptime=exptime, readoutm='1 MHz')
+            dark_collection = self.darks_ifc.filter(exptime=exptime)
             dark_ccds = dark_collection.ccds(ccd_kwargs=dict(unit='adu'))
             print(f'Creating master dark of t_exp = {exptime:.1f} seconds')
 
@@ -199,12 +202,13 @@ class Pipeline:
 
         for raw_science, fname in self.light_ifc.ccds(return_fname=True, ccd_kwargs=dict(unit='adu')):
             exptime = raw_science.header['EXPTIME']
+            readoutm = raw_science.header['READOUTM']
             calib_science = cdp.ccd_process(
                 raw_science,
                 dark_frame=self.master_dark[exptime],
                 master_flat=self.master_flat,
                 gain=1.5*u.electron/u.adu,
-                readnoise=10*u.electron,
+                readnoise=READNOISE[readoutm] * u.electron,
                 exposure_key='exptime',
                 exposure_unit=u.second,
                 gain_corrected=False
@@ -248,6 +252,28 @@ class Pipeline:
             pre_calibrated_flats = self.calib_ifc.filter(imagetyp='Flat frame', filter=flt, xbinning=binn)
             if len(pre_calibrated_flats.files) == 0:
                 pass
+
+    def set_master_bias(self, fname):
+        self.master_bias = CCDData.read(fname)
+
+    def set_master_dark(self, fname):
+        self.master_dark = CCDData.read(fname)
+
+    def set_master_flat(self, fname):
+        self.master_flat = CCDData.read(fname)
+
+    def set_bias_collection(self, collection):
+        self.bias_ifc = collection
+
+    def set_dark_collection(self, collection):
+        self.darks_ifc = collection
+
+    def set_flat_collection(self, collection):
+        self.flats_ifc = collection
+
+    def set_light_collection(self, collection):
+        self.light_ifc = collection
+
 
 
 def main():
