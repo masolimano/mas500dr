@@ -16,10 +16,11 @@ from .utils import inv_median, create_ccd_mask,cosmic_ray_correction
 
 warnings.simplefilter('ignore', FITSFixedWarning)
 
-READNOISE = {
-    '1 MHz': 10,
-    '8 MHz': 14
-}
+# Deprecated, the telescope is now equipped with a different camera
+#READNOISE = {
+#    '1 MHz': 10,
+#    '8 MHz': 14
+#}
 class Pipeline:
     def __init__(self, path, mem_limit=350e6):
         """
@@ -63,7 +64,7 @@ class Pipeline:
         self.light_ifc = self.parent_ifc.filter(imagetyp='Light Frame')
 
         light_pd = self.light_ifc.summary.to_pandas()
-        self.grouped_light = light_pd.groupby(by=['filter', 'xbinning', 'readoutm'])
+        self.grouped_light = light_pd.groupby(by=['filter', 'xbinning'])
 
 
     @staticmethod
@@ -142,8 +143,7 @@ class Pipeline:
             self.master_bias = self._avg_combine(bias_ccds, self.mem_limit)
 
         binning = self.master_bias.header['XBINNING']
-        readout = self.master_bias.header['READOUTM'].replace(' ', '')
-        self.master_bias.write(self.master_products_path / f'master_bias_bin{binning}_{readout}.fits', overwrite=True)
+        self.master_bias.write(self.master_products_path / f'master_bias_bin{binning}.fits', overwrite=True)
 
     def create_master_dark(self):
         """
@@ -151,7 +151,6 @@ class Pipeline:
         TODO: - combine only darks with equal:
                 - exposure length
                 - binning
-                - readout mode
               - identify hot pixels
         """
         available_exptimes = np.unique(self.darks_ifc.summary['exptime'].data)
@@ -171,7 +170,7 @@ class Pipeline:
 
 
             binning = self.master_dark[exptime].header['XBINNING']
-            self.master_dark[exptime].write(self.master_products_path / f'master_dark_{exptime:.0f}s_bin{binning:d}_1MHz.fits',
+            self.master_dark[exptime].write(self.master_products_path / f'master_dark_{exptime:.0f}s_bin{binning:d}.fits',
                                             overwrite=True)
 
 
@@ -201,13 +200,14 @@ class Pipeline:
 
         for raw_science, fname in self.light_ifc.ccds(return_fname=True, ccd_kwargs=dict(unit='adu')):
             exptime = raw_science.header['EXPTIME']
-            readoutm = raw_science.header['READOUTM']
+#            readoutm = raw_science.header['READOUTM']
+            gain = raw_science.header['GAIN']
             calib_science = cdp.ccd_process(
                 raw_science,
                 dark_frame=self.master_dark[exptime],
                 master_flat=self.master_flat,
-                gain=1.5*u.electron/u.adu,
-                readnoise=READNOISE[readoutm] * u.electron,
+                gain=gain*u.electron/u.adu,
+                readnoise=14 * u.electron,
                 exposure_key='exptime',
                 exposure_unit=u.second,
                 gain_corrected=False
